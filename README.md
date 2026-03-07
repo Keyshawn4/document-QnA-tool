@@ -14,7 +14,7 @@ A simple tool to ask questions about a document of the user's choosing
 1. Clone the repository
 ```bash
 git clone <repository-url>
-cd "cli-chatbot"
+cd "document-qa-tool"
 ```
 2. Create a virtual environment and activate it
 ```bash
