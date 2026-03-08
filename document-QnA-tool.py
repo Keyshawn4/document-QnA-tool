@@ -1,26 +1,23 @@
 import pymupdf
 import pymupdf4llm
 import pathlib
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-import string
 import os
 import anthropic
 from anthropic import Anthropic
 from dotenv import load_dotenv
-import warnings
+from operator import itemgetter
+import logging
 
-nltk.download('stopwords', quiet=True)
-nltk.download('punkt', quiet=True)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 
 ACCEPTED_FILE_TYPES = [".pdf", ".xps", ".epub", ".mobi", ".fb2", ".cbz", ".svg", ".txt", ".doc", ".docx"]
-STOP_WORDS = set(stopwords.words('english') + list(string.punctuation))
 SYSTEM_PROMPT = "You are a helpful, kind, and thoughtful assistant helping the user answer questions they have about a document.\
     You should do your best to answer the questions posed to you by the user, but if you do not know the answer, likely because \
     the answer is not in the information, you should let the user know that you do not have an answer but try to help the user by\
     telling them what information would be needed to answer the question. You should not give answers that are not relevant to the\
     context received or use outside information to guess at an answer. Stick strictly to the context provided."
+CHUNK_THRESHOLD = 0.25
+TOP_N = 5
 
 # Convert document to markdown format in chunks
 def doc_to_chunks(path: pathlib.Path) -> list:
@@ -39,22 +36,26 @@ def doc_to_chunks(path: pathlib.Path) -> list:
         index += 800
     return chunks
 
-def extract_keywords(question: str) -> list:
-    tokenized_words = word_tokenize(question)
-    keywords = [word.lower() for word in tokenized_words if word.lower() not in STOP_WORDS]
-    return keywords
 
-def find_relevant_chunks(keywords: list, chunks: list) -> list:
+def find_relevant_chunks(transformer_model, question: str, chunk_embeddings: list) -> list:
     relevant_chunks = []
-    for chunk in chunks:
-        chunk_lowercase = chunk.lower()
-        for keyword in keywords:
-            if keyword in chunk_lowercase:
-                relevant_chunks.append(chunk)
-                break
+    threshold_chunks = [] # for chunks that have passed the minimum threshold
+    question_embedding = transformer_model.encode(question, show_progress_bar=False)
+    for chunk in chunk_embeddings:
+        similarity_score = transformer_model.similarity(question_embedding, chunk[1])
+        if similarity_score >= CHUNK_THRESHOLD:
+            threshold_chunks.append((chunk[0], chunk[1], similarity_score))
+
+    threshold_chunks = sorted(threshold_chunks, key=itemgetter(2), reverse=True)
+    for i in range(TOP_N):
+        if i < len(threshold_chunks):
+            relevant_chunks.append(threshold_chunks[i][0])
+        else:
+            break
+    
     return relevant_chunks
 
-def query_document(chunks: list):
+def query_document(transformer_model, chunk_embeddings: list):
     load_dotenv()
 
     client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -63,7 +64,6 @@ def query_document(chunks: list):
     model = "claude-haiku-4-5"
     while (True):
         question = input("Please ask your question: ")
-
         if (question == "quit"):
             print("Closing session")
             break
@@ -71,9 +71,8 @@ def query_document(chunks: list):
             print("No message received")
             continue
 
-        words = extract_keywords(question)
-        relevant_chunks = "\n\n".join(find_relevant_chunks(words, chunks))
-        
+        relevant_chunks = "\n\n".join(find_relevant_chunks(transformer_model, question, chunk_embeddings))
+
         if not relevant_chunks:
             print("No relevant context can be found, please try again")
             continue
@@ -116,9 +115,14 @@ def query_document(chunks: list):
 
 # Get document path and get document
 document_path = input("Please input the document file path: ")
+print("Loading model and processing document...")
+from sentence_transformers import SentenceTransformer
 path = pathlib.Path(document_path)
 chunks = doc_to_chunks(path)
-query_document(chunks)
+os.environ["TQDM_DISABLE"] = "1"
+transformer_model = SentenceTransformer("all-MiniLM-L6-v2")
+chunk_embeddings = [(chunk, transformer_model.encode(chunk, show_progress_bar=False)) for chunk in chunks]
+query_document(transformer_model, chunk_embeddings)
 
 
 
