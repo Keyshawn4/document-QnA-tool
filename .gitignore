@@ -218,3 +218,4 @@ __marimo__/
 # Additional stuff
 embeddings_cache/
 models/
+chromadb/
