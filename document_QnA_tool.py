@@ -15,7 +15,8 @@ SYSTEM_PROMPT = "You are a helpful, kind, and thoughtful assistant helping the u
     You should do your best to answer the questions posed to you by the user, but if you do not know the answer, likely because \
     the answer is not in the information, you should let the user know that you do not have an answer but try to help the user by\
     telling them what information would be needed to answer the question. You should not give answers that are not relevant to the\
-    context received or use outside information to guess at an answer. Stick strictly to the context provided."
+    context received or use outside information to guess at an answer. Stick strictly to the context provided and provide the \
+    source(s) used to answer the question."
 CHUNK_THRESHOLD = 1.75
 TOP_N = 5
 
@@ -37,14 +38,14 @@ def doc_to_chunks(path: Path) -> list:
     return chunks
 
 
-def find_relevant_chunks(chroma_collection: Collection, question:str) -> dict:
+def find_relevant_chunks(chroma_collection: Collection, question:str) -> list:
     temp_query_results = chroma_collection.query(
         query_texts=[question],
         n_results=TOP_N
     )
-    return [doc for doc, dist in zip(temp_query_results["documents"][0], temp_query_results["distances"][0]) if dist <= CHUNK_THRESHOLD]
+    return [(doc, source) for doc, dist, source in zip(temp_query_results["documents"][0], temp_query_results["distances"][0], temp_query_results["metadatas"][0]) if dist <= CHUNK_THRESHOLD]
 
-def query_document(chroma_collection: Collection, chunks: list, document_path: Path):
+def query_document(chroma_collection: Collection):
     client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     context_window_limit = 200000
     context_threshold = 0.85
@@ -58,13 +59,13 @@ def query_document(chroma_collection: Collection, chunks: list, document_path: P
             print("No message received")
             continue
 
-        relevant_chunks = "\n\n".join(find_relevant_chunks(chroma_collection, question))
-
-        if not relevant_chunks:
+        relevant_chunks_sources = find_relevant_chunks(chroma_collection, question)
+        relevant_data = "\n\n".join(["\n".join((f"Source:{chunk[1]['source']}", chunk[0])) for chunk in relevant_chunks_sources])
+        if not relevant_chunks_sources:
             print("No relevant context can be found, please try again")
             continue
 
-        user_input = f"Here is the relevant context from the document: {relevant_chunks} \n\n Question: {question}"
+        user_input = f"Here is the relevant data from the document(s): {relevant_data} \n\n Question: {question}"
 
         message = [{
                 "content": user_input,
@@ -99,27 +100,35 @@ def query_document(chroma_collection: Collection, chunks: list, document_path: P
         except anthropic.APIStatusError as e:
             print("Request unsuccessful, please try again later")
 
-def hash_document_path(document_path: Path) -> str:
-    return hashlib.sha256(str(document_path).encode()).hexdigest()
+def generate_hash(string: str | Path) -> str:
+    return hashlib.sha256(str(string).encode()).hexdigest()
 
-def compute_embeddings(chroma_collection: Collection, chunks:list, document_path: str):
-    chunk_ids = [hash_document_path(document_path) + f"{i}" for i in range(len(chunks))]
+def compute_embeddings(chroma_collection: Collection, document_path: Path):
+    chunks = doc_to_chunks(document_path)
+    chunk_ids = [generate_hash(document_path) + f"{i}" for i in range(len(chunks))]
+    document_names = [{"source": document_path.name} for i in range(len(chunks))]
 
     chroma_collection.upsert(
         ids=chunk_ids,
         documents=chunks,
+        metadatas=document_names
     )
 
 def main():
     # Get document path and get document
-    path = input("Please input the document file path: ")
-    print("Loading model and processing document...")
-    document_path = Path(path)
-    chunks = doc_to_chunks(document_path)
-    chroma_client = chromadb.PersistentClient(path="./chromadb") # might need to be a global variable
-    chroma_collection = chroma_client.get_or_create_collection(name=document_path.name.lower())
-    compute_embeddings(chroma_collection, chunks, document_path)
-    query_document(chroma_collection, chunks, document_path)
+    path = input("Please input the document file path (if multiple documents, separate with a semicolon): ")
+    if not path:
+        raise ValueError("No path given")
+    print("Loading model and processing document(s)...")
+    path_list = path.split(";")
+    document_paths = [Path(path) for path in path_list]
+    file_names = sorted([path.name for path in document_paths])
+    collection_name = generate_hash("".join(file_names))
+    chroma_client = chromadb.PersistentClient(path="./chromadb")
+    chroma_collection = chroma_client.get_or_create_collection(name=collection_name)
+    for document_path in document_paths:
+        compute_embeddings(chroma_collection, document_path)
+    query_document(chroma_collection)
 
 if __name__ == "__main__":
     main()

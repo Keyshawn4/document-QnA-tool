@@ -1,4 +1,4 @@
-from document_QnA_tool import hash_document_path, doc_to_chunks
+from document_QnA_tool import generate_hash, doc_to_chunks
 import pytest
 from pathlib import Path
 import hashlib
@@ -7,15 +7,15 @@ import hashlib
 def mock_path(tmp_path):
     return tmp_path / "data" / "mock_document.pdf"
 
-def test_hash_document_path_len(mock_path):
-    assert len(hash_document_path(mock_path)) == 64, "sha246 always produces a 64 chracter hex string"
+def test_generate_hash_len(mock_path):
+    assert len(generate_hash(mock_path)) == 64, "sha256 always produces a 64 character hex string"
 
-def test_hash_document_path_determinism(mock_path):
-    assert hash_document_path(mock_path) == hash_document_path(mock_path)
+def test_generate_hash_determinism(mock_path):
+    assert generate_hash(mock_path) == generate_hash(mock_path)
 
-def test_hash_document_path_uniqueness(mock_path):
+def test_generate_hash_uniqueness(mock_path):
     test_path = mock_path.parent / "mock2_document.pdf"
-    assert hash_document_path(mock_path) != hash_document_path(test_path)
+    assert generate_hash(mock_path) != generate_hash(test_path)
 
 def test_doc_to_chunks_path_exists(mock_path):
     with pytest.raises(FileNotFoundError, match="Path does not exist"):
